@@ -1,0 +1,23 @@
+{
+  "project_name": "mi-proyecto",
+  "workdir": "/ruta/a/mi-proyecto",
+  "tasks": [
+    {
+      "title": "API de usuarios",
+      "agent": "Backend",
+      "priority": "high",
+      "tags": ["backend"],
+      "description": "Objetivo: crear los endpoints CRUD de usuarios con pruebas.",
+      "acceptance": "pytest pasa; GET /api/users responde 200."
+    },
+    {
+      "title": "Pantalla de usuarios",
+      "agent": "Frontend",
+      "priority": "medium",
+      "dependencies": ["#1"],
+      "tags": ["frontend"],
+      "description": "Objetivo: listado y alta de usuarios consumiendo la API de la tarea #1.",
+      "acceptance": "El build no tiene errores; la pantalla lista y crea usuarios."
+    }
+  ]
+}

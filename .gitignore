@@ -1,0 +1,18 @@
+# Estado local del tablero (tareas, conocimiento, logs, PIDs)
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Planes de proyectos concretos (pueden contener rutas o datos privados)
+plans/*
+!plans/examples/
+!plans/examples/**
+
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Documentos internos de planeación
+docs/

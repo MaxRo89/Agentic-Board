@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agentic Board</title>
+  <script>
+    // Apply the saved theme before first paint (avoids a light/dark flash).
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("board-theme"); } catch (e) {}
+      var theme = saved || (window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons/bootstrap-icons.min.css">
+  <link rel="stylesheet" href="/static/css/board.css?v=6">
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- Top bar -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-icon"><i class="bi bi-kanban"></i></span>
+          <div class="brand-text">
+            <div class="brand-title">Agentic Board</div>
+            <div class="brand-subtitle">Orquestación de agentes</div>
+          </div>
+        </div>
+        <div class="status-indicator" title="Estado de la conexión en tiempo real">
+          <span class="live-dot" id="sse-indicator"></span>
+          <span class="live-text" id="sse-text">Conectando…</span>
+        </div>
+      </div>
+
+      <div class="header-right">
+        <div class="global-progress">
+          <div class="progress-info">
+            <span class="progress-label">Progreso</span>
+            <span class="progress-pct" id="global-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="global-progress-bar" style="width: 0%;"></div>
+          </div>
+        </div>
+
+        <div class="header-actions">
+          <button class="btn btn-secondary" id="btn-knowledge" title="Base de conocimiento de los agentes">
+            <i class="bi bi-journal-text"></i><span class="btn-label">Conocimiento</span><span class="kb-count" id="kb-count">0</span>
+          </button>
+          <button class="btn btn-secondary" id="btn-templates" title="Cargar plantillas de flujo">
+            <i class="bi bi-layout-text-window"></i><span class="btn-label">Plantillas</span>
+          </button>
+          <button class="btn btn-secondary" id="btn-simulate" title="Simular la ejecución de un agente">
+            <i class="bi bi-play-circle"></i><span class="btn-label">Simular</span>
+          </button>
+          <button class="btn btn-primary" id="btn-new-task">
+            <i class="bi bi-plus-lg"></i><span class="btn-label">Nueva tarea</span>
+          </button>
+          <button class="btn btn-icon" id="btn-reset" title="Vaciar tablero (el conocimiento se conserva)">
+            <i class="bi bi-arrow-counterclockwise"></i>
+          </button>
+          <button class="btn btn-icon" id="btn-theme" title="Cambiar entre modo claro y oscuro">
+            <i class="bi bi-moon" id="theme-icon"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Kept for backwards compatibility with board.js; roles live in the dropdown below. -->
+    <div class="agent-fleet" id="agent-fleet-container" hidden></div>
+
+    <!-- Filters and counters -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="filter-group">
+          <label for="agent-filter"><i class="bi bi-people"></i> Agente</label>
+          <select id="agent-filter" class="form-select">
+            <option value="all">Todos los roles e instancias</option>
+            <optgroup label="Roles">
+            {% for name, info in agents.items() %}
+              <option value="{{ name }}">{{ name }} · {{ info.role }}</option>
+            {% endfor %}
+            </optgroup>
+            <optgroup label="Instancias en vivo" id="agent-filter-instances"></optgroup>
+          </select>
+        </div>
+        <div class="filter-group search-group">
+          <i class="bi bi-search search-icon"></i>
+          <input type="text" id="search-input" class="form-input" placeholder="Buscar por título, ID o etiqueta">
+        </div>
+      </div>
+
+      <div class="toolbar-right">
+        <div class="stat-pill"><span class="stat-num" id="stat-total">0</span><span class="stat-label">Total</span></div>
+        <div class="stat-pill stat-todo"><span class="stat-num" id="stat-todo">0</span><span class="stat-label">Por hacer</span></div>
+        <div class="stat-pill stat-prog"><span class="stat-num" id="stat-prog">0</span><span class="stat-label">En curso</span></div>
+        <div class="stat-pill stat-rev"><span class="stat-num" id="stat-rev">0</span><span class="stat-label">Revisión</span></div>
+        <div class="stat-pill stat-done"><span class="stat-num" id="stat-done">0</span><span class="stat-label">Hechas</span></div>
+      </div>
+    </div>
+
+    <!-- Live fleet + orchestrator activity -->
+    <section class="fleet-panel">
+      <div class="fleet-agents panel">
+        <div class="fleet-panel-header">
+          <span><i class="bi bi-cpu"></i> Agentes en ejecución</span>
+          <span class="fleet-summary" id="fleet-summary">sin agentes conectados</span>
+        </div>
+        <div class="live-agents" id="live-agents">
+          <div class="live-empty">Ningún agente conectado.</div>
+        </div>
+      </div>
+      <div class="fleet-feed panel">
+        <div class="fleet-panel-header">
+          <span><i class="bi bi-broadcast"></i> Actividad y mensajes</span>
+        </div>
+        <div class="activity-feed" id="activity-feed" aria-live="polite">
+          <div class="live-empty">Sin actividad todavía.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Kanban -->
+    <main class="board-canvas">
+      <section class="kanban-column" id="col-todo" data-status="todo">
+        <div class="column-header">
+          <div class="col-title-group">
+            <i class="bi bi-circle col-icon"></i>
+            <h2 class="column-title">Por hacer</h2>
+            <span class="col-badge" id="badge-todo">0</span>
+          </div>
+          <button class="col-add-btn" data-status="todo" title="Agregar tarea"><i class="bi bi-plus"></i></button>
+        </div>
+        <div class="column-cards" id="cards-todo" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'todo')"></div>
+      </section>
+
+      <section class="kanban-column" id="col-in_progress" data-status="in_progress">
+        <div class="column-header">
+          <div class="col-title-group">
+            <i class="bi bi-arrow-repeat col-icon col-icon-progress"></i>
+            <h2 class="column-title">En curso</h2>
+            <span class="col-badge" id="badge-in_progress">0</span>
+          </div>
+          <button class="col-add-btn" data-status="in_progress" title="Agregar tarea"><i class="bi bi-plus"></i></button>
+        </div>
+        <div class="column-cards" id="cards-in_progress" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'in_progress')"></div>
+      </section>
+
+      <section class="kanban-column" id="col-review" data-status="review">
+        <div class="column-header">
+          <div class="col-title-group">
+            <i class="bi bi-exclamation-circle col-icon col-icon-review"></i>
+            <h2 class="column-title">Revisión / bloqueadas</h2>
+            <span class="col-badge" id="badge-review">0</span>
+          </div>
+          <button class="col-add-btn" data-status="review" title="Agregar tarea"><i class="bi bi-plus"></i></button>
+        </div>
+        <div class="column-cards" id="cards-review" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'review')"></div>
+      </section>
+
+      <section class="kanban-column" id="col-done" data-status="done">
+        <div class="column-header">
+          <div class="col-title-group">
+            <i class="bi bi-check2-circle col-icon col-icon-done"></i>
+            <h2 class="column-title">Hechas</h2>
+            <span class="col-badge" id="badge-done">0</span>
+          </div>
+          <button class="col-add-btn" data-status="done" title="Agregar tarea"><i class="bi bi-plus"></i></button>
+        </div>
+        <div class="column-cards" id="cards-done" ondragover="allowDrop(event)" ondrop="handleDrop(event, 'done')"></div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <div class="footer-left">
+        <i class="bi bi-plug"></i>
+        <span>API</span><code class="console-code">/api</code>
+        <span class="console-sep">·</span>
+        <span>WebSocket</span><code class="console-code">/api/ws</code>
+        <span class="console-sep">·</span>
+        <span>MCP</span><code class="console-code">mcp_server.py</code>
+      </div>
+      <div class="footer-right" id="live-activity-ticker">
+        <i class="bi bi-activity"></i>
+        <span class="ticker-text" id="ticker-msg">Esperando actividad…</span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- MODAL: task detail -->
+  <div class="modal-overlay" id="modal-task-detail" style="display: none;">
+    <div class="modal-card modal-lg" role="dialog" aria-modal="true" aria-labelledby="modal-task-title">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span class="task-id-tag" id="modal-task-id">TASK-00</span>
+          <h3 class="modal-title" id="modal-task-title">Tarea</h3>
+        </div>
+        <button class="modal-close" onclick="closeModal('modal-task-detail')" title="Cerrar"><i class="bi bi-x-lg"></i></button>
+      </div>
+
+      <div class="modal-body modal-grid-layout">
+        <div class="modal-col-main">
+          <div class="section-block">
+            <label class="section-label">Descripción e instrucciones</label>
+            <p class="section-desc" id="modal-task-desc"></p>
+          </div>
+
+          <div class="section-block">
+            <label class="section-label">Dependencias</label>
+            <div class="dep-container" id="modal-task-deps"></div>
+          </div>
+
+          <div class="section-block">
+            <div class="console-header-bar">
+              <label class="section-label">Registro de ejecución</label>
+              <button class="btn-xs" onclick="addManualLogPrompt()"><i class="bi bi-pencil"></i> Agregar nota</button>
+            </div>
+            <div class="terminal-container" id="modal-task-logs"></div>
+          </div>
+
+          <div class="section-block">
+            <label class="section-label">Conclusiones, notas y memorias</label>
+            <div class="kb-list" id="modal-task-knowledge">
+              <span class="text-muted">Aún no hay conocimiento registrado para esta tarea.</span>
+            </div>
+          </div>
+
+          <div class="section-block">
+            <label class="section-label">Entregables y artefactos</label>
+            <div class="artifacts-box" id="modal-task-artifacts">
+              <span class="text-muted">Sin artefactos.</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-col-side">
+          <div class="prop-group">
+            <label>Estado</label>
+            <select id="modal-edit-status" class="form-select form-select-sm">
+              <option value="todo">Por hacer</option>
+              <option value="in_progress">En curso</option>
+              <option value="review">Revisión / bloqueada</option>
+              <option value="done">Hecha</option>
+            </select>
+          </div>
+
+          <div class="prop-group">
+            <label>Rol asignado</label>
+            <select id="modal-edit-agent" class="form-select form-select-sm">
+              {% for name, info in agents.items() %}
+              <option value="{{ name }}">{{ name }} · {{ info.role }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="prop-group">
+            <label>Ejecutada por</label>
+            <div class="prop-static" id="modal-task-assignee">-</div>
+          </div>
+
+          <div class="prop-group">
+            <label>Proyecto y directorio</label>
+            <div class="prop-static" id="modal-task-project">-</div>
+            <div class="prop-static prop-mono" id="modal-task-workdir">-</div>
+          </div>
+
+          <div class="prop-group">
+            <label>Prioridad</label>
+            <select id="modal-edit-priority" class="form-select form-select-sm">
+              <option value="critical">Crítica</option>
+              <option value="high">Alta</option>
+              <option value="medium">Media</option>
+              <option value="low">Baja</option>
+            </select>
+          </div>
+
+          <div class="prop-group">
+            <label>Tiempos</label>
+            <div class="time-metric"><span>Creada</span><span id="modal-time-created">-</span></div>
+            <div class="time-metric"><span>Iniciada</span><span id="modal-time-started">-</span></div>
+            <div class="time-metric"><span>Completada</span><span id="modal-time-completed">-</span></div>
+          </div>
+
+          <div class="prop-group modal-actions-stack">
+            <button class="btn btn-primary btn-block" id="modal-btn-save-props"><i class="bi bi-floppy"></i> Guardar cambios</button>
+            <button class="btn btn-success btn-block" id="modal-btn-mark-done"><i class="bi bi-check2"></i> Marcar como hecha</button>
+            <button class="btn btn-danger-outline btn-block" id="modal-btn-delete-task"><i class="bi bi-trash3"></i> Eliminar tarea</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: new task -->
+  <div class="modal-overlay" id="modal-new-task" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 class="modal-title"><i class="bi bi-plus-square"></i> Nueva tarea</h3>
+        <button class="modal-close" onclick="closeModal('modal-new-task')" title="Cerrar"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <form id="form-create-task" onsubmit="handleCreateTask(event)">
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="new-task-title">Título</label>
+            <input type="text" id="new-task-title" class="form-input" placeholder="Ej.: Implementar autenticación por token" required>
+          </div>
+          <div class="form-group">
+            <label for="new-task-desc">Instrucciones para el agente</label>
+            <textarea id="new-task-desc" class="form-textarea" rows="4" placeholder="Requisitos, archivos, restricciones y entregables" required></textarea>
+          </div>
+          <div class="form-row-2">
+            <div class="form-group">
+              <label for="new-task-agent">Rol responsable</label>
+              <select id="new-task-agent" class="form-select">
+                {% for name, info in agents.items() %}
+                <option value="{{ name }}"{% if name == "Backend" %} selected{% endif %}>{{ name }} · {{ info.role }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="new-task-priority">Prioridad</label>
+              <select id="new-task-priority" class="form-select">
+                <option value="critical">Crítica</option>
+                <option value="high">Alta</option>
+                <option value="medium" selected>Media</option>
+                <option value="low">Baja</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="new-task-deps">Dependencias</label>
+            <input type="text" id="new-task-deps" class="form-input" placeholder="TASK-01, TASK-02">
+            <span class="field-hint">La tarea no empieza hasta que sus dependencias estén hechas.</span>
+          </div>
+          <div class="form-group">
+            <label for="new-task-tags">Etiquetas</label>
+            <input type="text" id="new-task-tags" class="form-input" placeholder="backend, auth">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="closeModal('modal-new-task')">Cancelar</button>
+          <button type="submit" class="btn btn-primary"><i class="bi bi-check2"></i> Crear tarea</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: templates -->
+  <div class="modal-overlay" id="modal-templates" style="display: none;">
+    <div class="modal-card" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 class="modal-title"><i class="bi bi-layout-text-window"></i> Plantillas de flujo</h3>
+        <button class="modal-close" onclick="closeModal('modal-templates')" title="Cerrar"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted template-intro">Crea un conjunto de tareas encadenadas con un clic.</p>
+        <div class="template-cards-grid">
+          <div class="template-item" onclick="applyTemplate('fullstack')">
+            <i class="bi bi-window-stack template-icon"></i>
+            <div class="template-info">
+              <h4>Aplicación web completa</h4>
+              <p>Backend, frontend, pruebas y revisión de seguridad.</p>
+            </div>
+            <button class="btn btn-sm btn-secondary">Cargar</button>
+          </div>
+          <div class="template-item" onclick="applyTemplate('bugfix')">
+            <i class="bi bi-bug template-icon"></i>
+            <div class="template-info">
+              <h4>Corrección de un defecto crítico</h4>
+              <p>Reproducción, corrección y prueba de no regresión.</p>
+            </div>
+            <button class="btn btn-sm btn-secondary">Cargar</button>
+          </div>
+          <div class="template-item" onclick="applyTemplate('devops')">
+            <i class="bi bi-box-seam template-icon"></i>
+            <div class="template-info">
+              <h4>Despliegue a producción</h4>
+              <p>Contenedor, integración continua y pruebas de humo.</p>
+            </div>
+            <button class="btn btn-sm btn-secondary">Cargar</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: knowledge base -->
+  <div class="modal-overlay" id="modal-knowledge" style="display: none;">
+    <div class="modal-card modal-lg" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <h3 class="modal-title"><i class="bi bi-journal-text"></i> Base de conocimiento</h3>
+        <button class="modal-close" onclick="closeModal('modal-knowledge')" title="Cerrar"><i class="bi bi-x-lg"></i></button>
+      </div>
+      <div class="modal-body">
+        <div class="kb-toolbar">
+          <input type="text" id="kb-search" class="form-input" placeholder="Buscar conclusiones, decisiones, problemas conocidos…">
+          <select id="kb-kind" class="form-select">
+            <option value="">Todos los tipos</option>
+            <option value="summary">Resumen</option>
+            <option value="conclusion">Conclusión</option>
+            <option value="decision">Decisión</option>
+            <option value="gotcha">Problema conocido</option>
+            <option value="memory">Memoria</option>
+            <option value="note">Nota</option>
+          </select>
+          <select id="kb-project" class="form-select">
+            <option value="">Todos los proyectos</option>
+          </select>
+        </div>
+        <div class="kb-list kb-list-lg" id="kb-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/js/board.js?v=6"></script>
+</body>
+</html>
